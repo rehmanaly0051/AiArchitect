@@ -8,16 +8,19 @@ A cutting-edge AI-powered platform built with [Next.js](https://nextjs.org), des
 
 Explore AiArchitect step by step:
 
-| Step                | Preview                                                |
-|---------------------|--------------------------------------------------------|
-| Homepage            | ![Homepage](demo/floorplan.jpg)                         |
-| Signup              | ![Signup](demo/signup.jpg)                             |
-| Login               | ![Login](demo/login.jpg)                               |
-| Dashboard           | ![Dashboard](demo/dashboard.png)                       |
-| Create Project      | ![Create Project](demo/feature-create.png)             |
-| Project List        | ![Project List](demo/item-list.png)                    |
-| Project Details     | ![Project Details](demo/item-details.png)              |
-| Profile Settings    | ![Profile](demo/profile.png)                           |
+| Step                      | Preview                                                |
+|---------------------------|--------------------------------------------------------|
+| Dashboard                 | ![Dashboard](demo/entering.jpg)                        | 
+| Signup                    | ![Signup](demo/signup.jpg)                             |
+| Login                     | ![Login](demo/login.jpg)                               |
+| AboutUs                   | ![Homepage](demo/floorplan.jpg)                        |
+| FAQs                      | ![Homepage](demo/faqs.jpg)                             |
+| About                     | ![Homepage](demo/about.jpg)                            |
+| Contact                   | ![Homepage](demo/faqs.jpg)                             |
+| GetsStarted               | ![Homepage](demo/floorplan.jpg)                        |
+| Exterior Designs          | ![Create Project](demo/exterior.jpq)                   |
+| 3D on Exterior            | ![Project List](demo/3d.jpg)                           |
+| Interior Designs          | ![Project Details](demo/interior.jpg)                  |
 
 > **Note:** Screenshots are in the `demo/` folder. Replace these with your actual app screenshots for best presentation.
 
