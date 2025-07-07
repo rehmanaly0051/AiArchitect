@@ -1,36 +1,102 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# AiArchitect
 
-## Getting Started
+A cutting-edge AI-powered platform built with [Next.js](https://nextjs.org), designed to streamline architecture workflows and deliver a sleek, modern user experience.
 
-First, run the development server:
+---
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+## 🚀 Live Demo
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Explore AiArchitect step by step:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+| Step                | Preview                                                |
+|---------------------|--------------------------------------------------------|
+| Homepage            | ![Homepage](demo/floorplan.jpg)                         |
+| Signup              | ![Signup](demo/signup.jpg)                             |
+| Login               | ![Login](demo/login.jpg)                               |
+| Dashboard           | ![Dashboard](demo/dashboard.png)                       |
+| Create Project      | ![Create Project](demo/feature-create.png)             |
+| Project List        | ![Project List](demo/item-list.png)                    |
+| Project Details     | ![Project Details](demo/item-details.png)              |
+| Profile Settings    | ![Profile](demo/profile.png)                           |
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+> **Note:** Screenshots are in the `demo/` folder. Replace these with your actual app screenshots for best presentation.
 
-## Learn More
+---
 
-To learn more about Next.js, take a look at the following resources:
+## 🛠️ Getting Started
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+To run this project locally:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+1. **Install dependencies:**
+    ```bash
+    npm install
+    # or
+    yarn install
+    # or
+    pnpm install
+    # or
+    bun install
+    ```
 
-## Deploy on Vercel
+2. **Start the development server:**
+    ```bash
+    npm run dev
+    # or
+    yarn dev
+    # or
+    pnpm dev
+    # or
+    bun dev
+    ```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+3. **Open your browser:**  
+   Visit [http://localhost:3000](http://localhost:3000) to view the app.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+---
+
+## 📁 Project Structure
+
+- `app/page.tsx` – Main page component (edit this to update homepage)
+- `public/demo/` – Demo screenshots for README and documentation
+- `components/` – Reusable UI components
+- `styles/` – CSS and global styles
+- `utils/` – Utility functions
+
+---
+
+## 🎨 Fonts & Styling
+
+This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) for font optimization. The [Geist](https://vercel.com/font) font family provides a clean, modern look.
+
+---
+
+## 📚 Learn More
+
+- [Next.js Documentation](https://nextjs.org/docs)
+- [Learn Next.js](https://nextjs.org/learn) – Interactive tutorial
+- [Next.js GitHub](https://github.com/vercel/next.js)
+
+---
+
+## 🚀 Deploy on Vercel
+
+Deploy seamlessly using the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme).
+
+See [Next.js Deployment Docs](https://nextjs.org/docs/app/building-your-application/deploying) for more information.
+
+---
+
+## 🤝 Contributing
+
+Contributions are welcome!  
+Please open issues and submit pull requests for improvements or bug fixes.
+
+---
+
+## 📝 License
+
+This project is [MIT licensed](LICENSE).
+
+---
+
+> Made with ❤️ using [Next.js](https://nextjs.org/)
