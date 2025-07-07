@@ -17,9 +17,9 @@ Explore AiArchitect step by step:
 | FAQs                      | ![Homepage](demo/faqs.jpg)                             |
 | Contact                   | ![Homepage](demo/contect.jpg)                          |
 | GetsStarted               | ![Homepage](demo/floorplan.jpg)                        |
-| Exterior Designs          | ![Create Project](demo/exterior.jpq)                   |
-| 3D on Exterior            | ![Project List](demo/3d.jpg)                           |
-| Interior Designs          | ![Project Details](demo/interior.jpg)                  |
+| Exterior Designs          | ![Exterior](demo/exterior.jpq)                         |
+| 3D on Exterior            | ![3D Generation](demo/3d.jpg)                          |
+| Interior Designs          | ![Interior Designs](demo/interior.jpg)                 |
 
 > **Note:** Screenshots are in the `demo/` folder. Replace these with your actual app screenshots for best presentation.
 
