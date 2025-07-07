@@ -15,7 +15,7 @@ Explore AiArchitect step by step:
 | Login                     | ![Login](demo/login.jpg)                               |
 | AboutUs                   | ![Homepage](demo/about.jpg)                            |
 | FAQs                      | ![Homepage](demo/faqs.jpg)                             |
-| Contact                   | ![Homepage](demo/contact.jpg)                          |
+| Contact                   | ![Homepage](demo/contect.jpg)                          |
 | GetsStarted               | ![Homepage](demo/floorplan.jpg)                        |
 | Exterior Designs          | ![Create Project](demo/exterior.jpq)                   |
 | 3D on Exterior            | ![Project List](demo/3d.jpg)                           |
