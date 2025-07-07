@@ -1,0 +1,1105 @@
+import os #
+import json
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+import requests
+import warnings
+import torch
+import io
+import base64
+import tempfile
+import traceback
+import cv2
+import random
+import glob
+from fastapi import FastAPI, Form, HTTPException, File, UploadFile
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+from typing import Optional, List
+import gc
+import uuid
+import time
+
+warnings.filterwarnings("ignore")
+
+try:
+    from diffusers import DiffusionPipeline, StableDiffusionXLPipeline, StableDiffusionXLImg2ImgPipeline
+    STABLE_DIFFUSION_AVAILABLE = True
+except ImportError:
+    STABLE_DIFFUSION_AVAILABLE = False
+    print("Diffusers not available, using placeholder designs.")
+
+# Initialize FastAPI app
+app = FastAPI(title="AI Interior and Exterior Designer API")
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Directories
+UPLOAD_DIR = "./temp_floorplans"
+REFERENCE_DIR = "./reference_images"
+OUTPUT_DIR = "./output"
+EXTERIOR_TEMP_DIR = "./temp_exterior"
+THREED_OUTPUT_DIR = "./3d_output"
+PUBLIC_IMAGES_DIR = "./public_images"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(REFERENCE_DIR, exist_ok=True)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(EXTERIOR_TEMP_DIR, exist_ok=True)
+os.makedirs(THREED_OUTPUT_DIR, exist_ok=True)
+os.makedirs(PUBLIC_IMAGES_DIR, exist_ok=True)
+
+# Load or initialize storage
+EXTERIOR_DESIGN_STORAGE = {}
+if os.path.exists("exterior_designs.json"):
+    with open("exterior_designs.json", "r") as f:
+        EXTERIOR_DESIGN_STORAGE.update(json.load(f))
+THREED_DRAFT_STORAGE = {}
+if os.path.exists("threed_drafts.json"):
+    with open("threed_drafts.json", "r") as f:
+        THREED_DRAFT_STORAGE.update(json.load(f))
+
+# Meshy.ai API configuration
+MESHY_API_KEY = "msy_Lq9wrJ2pW6VHFZKGQLLgE805az0isgbLIh1c"  # Updated API key
+MESHY_API_URL = "https://api.meshy.ai/openapi/v1/image-to-3d"
+SPACE_ID = os.environ.get("SPACE_ID", "")
+if SPACE_ID:
+    SERVER_PUBLIC_URL = f"https://{SPACE_ID.replace('/', '-')}.hf.space"
+else:
+    SERVER_PUBLIC_URL = "https://rehmanalii-interior-design-ai.hf.space"
+
+class EnhancedAIInteriorDesigner:
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(EnhancedAIInteriorDesigner, cls).__new__(cls)
+            cls._instance.model_loaded = False
+            cls._instance.model = None
+            cls._instance.device = "cuda" if torch.cuda.is_available() else "cpu"
+            print(f"Interior Designer using device: {cls._instance.device}")
+        return cls._instance
+
+    def load_model(self):
+        if STABLE_DIFFUSION_AVAILABLE and not self.model_loaded:
+            try:
+                print("Loading RealVisXL_V3.0 for interior...")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                
+                self.model = DiffusionPipeline.from_pretrained(
+                    "SG161222/RealVisXL_V3.0",
+                    torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+                    use_safetensors=True,
+                    low_cpu_mem_usage=True,
+                    variant="fp16" if self.device == "cuda" else None
+                )
+                self.model = self.model.to(self.device)
+                
+                if self.device == "cuda":
+                    try:
+                        self.model.enable_attention_slicing()
+                        self.model.enable_model_cpu_offload()
+                        print("Enabled interior model memory optimizations")
+                    except Exception as e:
+                        print(f"Could not enable interior optimizations: {e}")
+                
+                self.model_loaded = True
+                print(f"Interior model loaded successfully on {self.device}")
+                
+            except Exception as e:
+                print(f"Interior model loading error: {e}")
+                self.model_loaded = False
+                self.model = None
+
+    def _normalize_room_type(self, text):
+        mapping = {
+            "BED": "BEDROOM", "BEDROOM": "BEDROOM", "KIDSROOM": "KIDS_BEDROOM",
+            "GUESTROOM": "GUEST_BEDROOM", "LIVING": "LIVING", "LOUNGE": "LIVING",
+            "HALL": "LIVING", "SITTING": "LIVING", "DRAWING": "DRAWING_ROOM",
+            "DINING": "DINING", "KITCHEN": "KITCHEN", "KITCEH": "KITCHEN",
+            "KITCE": "KITCHEN", "KITEC": "KITCHEN", "BATH": "BATHROOM",
+            "TOILET": "BATHROOM", "CLOSET": "STORAGE", "DRESS": "DRESSING_ROOM",
+            "STOREROOM": "STORAGE", "ACTIVITY": "ACTIVITY_ROOM", "GAMES": "GAME_ROOM",
+            "MEDIA": "MEDIA_ROOM", "SNOOKER": "GAME_ROOM", "LOBBY": "ENTRANCE",
+            "STAIRS": "STAIRCASE", "STAIRSHALL": "STAIRCASE", "SITOUT": "BALCONY",
+            "PORCH": "BALCONY", "OPEN": "TERRACE", "LAWN": "LAWN", "OFFICE": "OFFICE",
+            "LOUNDRY": "LAUNDRY", "ROOM": "ROOM", "OBJECTS": "ROOM"
+        }
+        return mapping.get(text.upper(), "ROOM")
+
+    def get_enhanced_prompt(self, room_type, style):
+        base_prompts = {
+            "LIVING": {
+                "minimalist": "Ultra-clean living space, white and beige tones, simple geometric furniture, natural light, uncluttered design, Scandinavian influence",
+                "luxury": "Opulent living room with premium materials, Italian leather furniture, crystal chandelier, marble accents, gold details, designer pieces",
+                "modern": "Contemporary living room with sleek furniture, neutral color palette, large windows, clean lines, modern lighting fixtures, stylish accents"
+            },
+            "BEDROOM": {
+                "minimalist": "Simple bedroom with essential furniture only, white and natural wood, clean lines, natural lighting, peaceful atmosphere",
+                "luxury": "Luxurious master bedroom with king-size bed, premium fabrics, walk-in closet, marble bathroom ensuite, designer lighting",
+                "modern": "Contemporary bedroom with modern furniture, neutral tones, stylish headboard, ambient lighting, sleek design elements"
+            },
+            "KIDS_BEDROOM": {
+                "minimalist": "Clean and simple kids bedroom with essential furniture, soft colors, natural materials, safe design, educational elements",
+                "luxury": "Luxurious kids bedroom with premium children's furniture, themed decor, built-in storage, quality materials, playful yet elegant design",
+                "modern": "Modern kids bedroom with contemporary furniture, bright colors, fun design elements, organized storage, safe modern design"
+            },
+            "GUEST_BEDROOM": {
+                "minimalist": "Simple guest bedroom with clean lines, neutral colors, essential comfortable furniture, welcoming atmosphere",
+                "luxury": "Elegant guest bedroom with hotel-like luxury, premium bedding, sophisticated decor, welcoming ambiance",
+                "modern": "Contemporary guest bedroom with modern furniture, comfortable design, stylish decor, welcoming atmosphere"
+            },
+            "DRAWING_ROOM": {
+                "minimalist": "Minimalist formal sitting room with clean furniture, neutral palette, simple elegant design, natural lighting",
+                "luxury": "Luxurious drawing room with premium furniture, crystal chandeliers, marble accents, formal elegant atmosphere",
+                "modern": "Modern drawing room with contemporary furniture, sophisticated design, stylish lighting, elegant atmosphere"
+            },
+            "KITCHEN": {
+                "minimalist": "Ultra-clean kitchen with handle-less cabinets, white surfaces, hidden appliances, simple design, natural light",
+                "luxury": "High-end kitchen with premium appliances, marble countertops, custom cabinetry, wine storage, professional-grade equipment",
+                "modern": "Contemporary kitchen with sleek appliances, modern cabinetry, stylish backsplash, efficient layout, modern lighting"
+            },
+            "BATHROOM": {
+                "minimalist": "Simple bathroom with essential fixtures, white tiles, clean lines, natural lighting, uncluttered design",
+                "luxury": "Spa-like bathroom with marble surfaces, rainfall shower, soaking tub, premium fixtures, ambient lighting",
+                "modern": "Contemporary bathroom with modern fixtures, stylish tiles, efficient layout, modern lighting, sleek design"
+            },
+            "DINING": {
+                "minimalist": "Simple dining space with essential furniture, clean lines, natural materials, uncluttered design",
+                "luxury": "Formal dining room with premium table, designer chairs, crystal chandelier, luxurious materials",
+                "modern": "Contemporary dining room with modern table, stylish chairs, modern lighting, sleek design, elegant atmosphere"
+            },
+            "OFFICE": {
+                "minimalist": "Clean home office with essential furniture, white and wood tones, organized workspace, natural lighting",
+                "luxury": "Premium home office with executive furniture, leather chairs, built-in bookshelves, sophisticated design",
+                "modern": "Contemporary home office with modern desk, ergonomic chair, stylish storage, modern lighting, professional atmosphere"
+            },
+            "STORAGE": {
+                "minimalist": "Organized storage room with clean shelving, white surfaces, efficient organization systems, natural lighting",
+                "luxury": "Premium walk-in closet with custom cabinetry, elegant lighting, luxury storage solutions, marble accents",
+                "modern": "Modern storage space with contemporary organization systems, sleek design, efficient layout, modern fixtures"
+            },
+            "DRESSING_ROOM": {
+                "minimalist": "Simple dressing room with clean lines, white surfaces, essential furniture, natural lighting",
+                "luxury": "Luxury walk-in closet with premium fixtures, elegant lighting, marble surfaces, designer storage",
+                "modern": "Contemporary dressing room with modern fixtures, stylish design, efficient storage, modern lighting"
+            },
+            "ENTRANCE": {
+                "minimalist": "Clean entrance hall with simple furniture, neutral colors, natural lighting, uncluttered design",
+                "luxury": "Grand entrance foyer with marble flooring, crystal chandelier, premium furniture, elegant design",
+                "modern": "Contemporary entrance with modern furniture, stylish decor, modern lighting, welcoming atmosphere"
+            },
+            "BALCONY": {
+                "minimalist": "Simple outdoor balcony with clean furniture, natural materials, plants, minimalist design",
+                "luxury": "Luxurious outdoor terrace with premium furniture, elegant lighting, high-end materials, sophisticated design",
+                "modern": "Contemporary outdoor space with modern furniture, stylish planters, modern lighting, comfortable design"
+            }
+        }
+
+        room_prompts = base_prompts.get(room_type, {
+            "minimalist": f"Minimalist {room_type.lower()} interior with clean design",
+            "luxury": f"Luxury {room_type.lower()} interior with premium materials",
+            "modern": f"Modern {room_type.lower()} interior with contemporary design"
+        })
+
+        base_prompt = room_prompts.get(style, room_prompts["modern"])
+        quality_suffix = ", professional interior photography, 8k resolution, photorealistic, architectural photography, high detail, sharp focus"
+        return base_prompt + quality_suffix
+
+    def get_negative_prompt(self, style):
+        base_negative = "blurry, low quality, distorted, cluttered, messy, dark, poor lighting, unrealistic, cartoon, painting, sketch, bad proportions, deformed"
+        style_specific = {
+            "minimalist": base_negative + ", busy patterns, excessive decoration, clutter, too many colors",
+            "luxury": base_negative + ", cheap materials, poor quality, simple design",
+            "modern": base_negative + ", outdated design, old-fashioned elements, vintage style"
+        }
+        return style_specific.get(style, base_negative)
+
+    def generate_room_design(self, room_type, style="modern", custom_prompt=None):
+        if not self.model_loaded or self.model is None:
+            print(f"Interior model not loaded, generating placeholder for {room_type}")
+            return self._generate_placeholder(room_type, style)
+
+        if custom_prompt:
+            prompt = custom_prompt + ", professional interior photography, 8k resolution, photorealistic"
+        else:
+            prompt = self.get_enhanced_prompt(room_type, style)
+
+        negative_prompt = self.get_negative_prompt(style)
+
+        try:
+            print(f"Generating {room_type} interior design in {style} style...")
+            if self.device == "cuda":
+                torch.cuda.empty_cache()
+            
+            # Generate a random seed for each call
+            seed = random.randint(0, 2**32 - 1)
+            with torch.no_grad():
+                image = self.model(
+                    prompt=prompt,
+                    negative_prompt=negative_prompt,
+                    num_inference_steps=15,
+                    guidance_scale=7.5,
+                    width=512,
+                    height=512,
+                    generator=torch.Generator(device=self.device).manual_seed(seed)
+                ).images[0]
+            
+            print(f"Generated {room_type} interior design successfully with seed {seed}")
+            return np.array(image)
+            
+        except Exception as e:
+            print(f"Interior generation error for {room_type}: {e}")
+            print(f"Traceback: {traceback.format_exc()}")
+            return self._generate_placeholder(room_type, style)
+
+    def _generate_placeholder(self, room_type, style):
+        size = (512, 512, 3)
+        color_schemes = {
+            "minimalist": [(250, 250, 250), (245, 245, 245)],
+            "luxury": [(245, 240, 235), (220, 210, 195)],
+            "modern": [(235, 235, 240), (210, 210, 220)]
+        }
+        base_color, accent_color = color_schemes.get(style, [(235, 235, 240), (210, 210, 220)])
+
+        placeholder = np.ones(size, dtype=np.uint8)
+        for i in range(size[0]):
+            blend = i / size[0]
+            color = [int(base_color[j] * (1-blend) + accent_color[j] * blend) for j in range(3)]
+            placeholder[i, :] = color
+
+        pil_image = Image.fromarray(placeholder)
+        draw = ImageDraw.Draw(pil_image)
+        
+        try:
+            font = ImageFont.load_default()
+        except:
+            font = None
+            
+        text = f"{room_type.replace('_', ' ')}\n{style.upper()} STYLE"
+        
+        if font:
+            try:
+                bbox = draw.textbbox((0, 0), text, font=font)
+                text_width = bbox[2] - bbox[0]
+                text_height = bbox[3] - bbox[1]
+                x = (size[1] - text_width) // 2
+                y = (size[0] - text_height) // 2
+                draw.text((x, y), text, fill=(100, 100, 100), font=font)
+            except:
+                draw.text((size[1]//2 - 50, size[0]//2 - 10), text, fill=(100, 100, 100))
+        else:
+            draw.text((size[1]//2 - 50, size[0]//2 - 10), text, fill=(100, 100, 100))
+        
+        return np.array(pil_image)
+
+class EnhancedAIExteriorDesigner:
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(EnhancedAIExteriorDesigner, cls).__new__(cls)
+            cls._instance.models_loaded = False
+            cls._instance.txt2img_pipe = None
+            cls._instance.img2img_pipe = None
+            cls._instance.device = "cuda" if torch.cuda.is_available() else "cpu"
+            print(f"Exterior Designer using device: {cls._instance.device}")
+        return cls._instance
+
+    def load_models(self):
+        if STABLE_DIFFUSION_AVAILABLE and not self.models_loaded:
+            try:
+                print("Loading SDXL RealVisXL V3.0 for exterior...")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                
+                self.txt2img_pipe = StableDiffusionXLPipeline.from_pretrained(
+                    "SG161222/RealVisXL_V3.0",
+                    torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+                    use_safetensors=True,
+                    low_cpu_mem_usage=True,
+                    variant="fp16" if self.device == "cuda" else None
+                )
+                self.txt2img_pipe = self.txt2img_pipe.to(self.device)
+                
+                if self.device == "cuda":
+                    try:
+                        self.txt2img_pipe.enable_xformers_memory_efficient_attention()
+                        self.txt2img_pipe.enable_vae_tiling()
+                        print("Enabled exterior txt2img memory optimizations")
+                    except Exception as e:
+                        print(f"Could not enable txt2img optimizations: {e}")
+                
+                self.img2img_pipe = StableDiffusionXLImg2ImgPipeline(
+                    vae=self.txt2img_pipe.vae,
+                    text_encoder=self.txt2img_pipe.text_encoder,
+                    text_encoder_2=self.txt2img_pipe.text_encoder_2,
+                    tokenizer=self.txt2img_pipe.tokenizer,
+                    tokenizer_2=self.txt2img_pipe.tokenizer_2,
+                    unet=self.txt2img_pipe.unet,
+                    scheduler=self.txt2img_pipe.scheduler,
+                ).to(self.device)
+                
+                if self.device == "cuda":
+                    try:
+                        self.img2img_pipe.enable_xformers_memory_efficient_attention()
+                        self.img2img_pipe.enable_vae_tiling()
+                        print("Enabled exterior img2img memory optimizations")
+                    except Exception as e:
+                        print(f"Could not enable img2img optimizations: {e}")
+                
+                self.models_loaded = True
+                print(f"Exterior models loaded successfully on {self.device}")
+                
+            except Exception as e:
+                print(f"Exterior model loading error: {e}")
+                self.models_loaded = False
+                self.txt2img_pipe = None
+                self.img2img_pipe = None
+
+    def opencv_floor_detection(self, image_path):
+        try:
+            print("Analyzing floor plan for floor count...")
+            image = cv2.imread(image_path)
+            if image is None:
+                print("Could not read image, defaulting to 1 floor")
+                return 1
+            
+            height, width = image.shape[:2]
+            new_width = 600
+            new_height = int(height * new_width / width)
+            image = cv2.resize(image, (new_width, new_height))
+            
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+            morph = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+            contours, _ = cv2.findContours(morph, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            bounding_boxes = [cv2.boundingRect(cnt) for cnt in contours]
+            filtered_boxes = [box for box in bounding_boxes if box[2] > 200 and box[3] > 200]
+            
+            num_floors = 1
+            if len(filtered_boxes) == 2:
+                print("Detected TWO-FLOOR layout")
+                num_floors = 2
+            elif len(filtered_boxes) == 1:
+                print("Detected SINGLE-FLOOR layout")
+                num_floors = 1
+            else:
+                print("Could not confidently detect floor layouts. Defaulting to single floor.")
+                num_floors = 1
+            
+            return num_floors
+            
+        except Exception as e:
+            print(f"Floor detection error: {e}, defaulting to 1 floor")
+            return 1
+
+    def get_reference_images(self):
+        image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '*.tiff']
+        reference_images = []
+        for extension in image_extensions:
+            reference_images.extend(glob.glob(os.path.join(REFERENCE_DIR, extension)))
+            reference_images.extend(glob.glob(os.path.join(REFERENCE_DIR, extension.upper())))
+        print(f"Found {len(reference_images)} reference images")
+        return reference_images
+
+    def load_random_reference_image(self):
+        reference_images = self.get_reference_images()
+        if not reference_images:
+            print("No reference images found. Proceeding without reference image...")
+            return None, None
+        selected_ref_path = random.choice(reference_images)
+        selected_ref_name = os.path.basename(selected_ref_path)
+        try:
+            ref_img = Image.open(selected_ref_path)
+            print(f"Selected reference image: {selected_ref_name}")
+            return ref_img, selected_ref_name
+        except Exception as e:
+            print(f"Error loading reference image {selected_ref_name}: {str(e)}")
+            return None, None
+
+    def preprocess_reference_image(self, ref_img, target_size=(640, 832)):
+        return ref_img.resize(target_size, Image.Resampling.LANCZOS)
+
+    def create_prompt_one_floor(self, color, use_reference=False):
+        if use_reference:
+            pos = (
+                f"Ultra-realistic, strictly single-story house front view in Pakistan, exactly one floor only, no second floor, "
+                f"clean {color} facade, flat roof, large glass windows with vertical blinds, black main entrance door, "
+                f"carport with a car parked, minimalist design, symmetrical layout, warm exterior lighting, soft daylight, "
+                f"concrete driveway, centered camera, matching the architectural style and composition of the reference image, "
+                f"8K quality"
+            )
+        else:
+            pos = (
+                f"Ultra-realistic, strictly single-story house front view in Pakistan, exactly one floor only, no second floor, "
+                f"clean {color} facade, flat roof, large glass windows with vertical blinds, black main entrance door, "
+                f"carport with a car parked, minimalist design, symmetrical layout, warm exterior lighting, soft daylight, "
+                f"concrete driveway, centered camera, 8K quality"
+            )
+        neg = (
+            "two-story, multiple floors, second floor, stairs, balcony, mumty, rooftop structure, gabled roof, "
+            "people, humans, birds, shadows on ground, complex environment, setting, blurry, low quality, distorted"
+        )
+        return pos, neg
+
+    def create_prompt_two_floor(self, color, use_reference=False):
+        pos = (
+            f"Ultra-realistic, strictly two-story house front view in Pakistan, exactly two floors only, no third floor or mumty, "
+            f"clean {color} facade, car in garage, boxy layout, wide glass windows, large main gate, symmetrical design, "
+            f"soft daylight, concrete driveway, centered camera, 8K quality"
+        )
+        neg = (
+            "third floor, three-story, extra floor, third level, 3 floors, three floors, three level, mumty, rooftop structure, roof room, "
+            "extra height, sloped roof, tall building, apartment, penthouse, blurry, people, birds, garden"
+        )
+        return pos, neg
+
+    def generate_house_design(self, num_floors, color_scheme=None, num_variations=3):
+        if not self.models_loaded or (self.txt2img_pipe is None and self.img2img_pipe is None):
+            print("Exterior models not loaded, generating placeholder")
+            return [self._generate_placeholder_house(num_floors, color_scheme or "modern grey")]
+
+        try:
+            # Generate a random seed for each variation
+            use_reference = num_floors == 1
+            color_choices = [
+                "dark grey and black", "brick red and brown", "navy blue and grey",
+                "charcoal grey and brown", "terracotta and brown", "slate grey and black",
+                "white and light grey", "white and light grey", "cream and beige"
+            ]
+            color = color_scheme if color_scheme else random.choice(color_choices)
+            print(f"Generating {num_floors}-floor house with {color} color scheme")
+
+            ref_img = None
+            if use_reference:
+                ref_img, ref_name = self.load_random_reference_image()
+                if ref_img is not None:
+                    ref_img = self.preprocess_reference_image(ref_img)
+                    print(f"Using reference image: {ref_name}")
+                else:
+                    use_reference = False
+
+            generated_images = []
+            for i in range(num_variations):
+                seed = random.randint(0, 2**32 - 1)
+                generator = torch.Generator(device=self.device).manual_seed(seed)
+                if self.device == "cuda":
+                    torch.cuda.empty_cache()
+                if use_reference and ref_img is not None and self.img2img_pipe is not None:
+                    pos, neg = self.create_prompt_one_floor(color, use_reference=True)
+                    with torch.no_grad():
+                        img = self.img2img_pipe(
+                            prompt=pos,
+                            negative_prompt=neg,
+                            image=ref_img,
+                            strength=0.6,
+                            guidance_scale=9,
+                            num_inference_steps=30,
+                            generator=generator,
+                        ).images[0]
+                else:
+                    if num_floors == 1:
+                        pos, neg = self.create_prompt_one_floor(color, use_reference=False)
+                    else:
+                        pos, neg = self.create_prompt_two_floor(color, use_reference=False)
+                    with torch.no_grad():
+                        img = self.txt2img_pipe(
+                            prompt=pos,
+                            negative_prompt=neg,
+                            guidance_scale=7.5,
+                            num_inference_steps=25,
+                            generator=generator,
+                            height=768,
+                            width=768
+                        ).images[0]
+                generated_images.append(np.array(img))
+                print(f"Generated exterior variation {i+1}/{num_variations} with seed {seed}")
+            return generated_images
+        except Exception as e:
+            print(f"Exterior generation error: {e}")
+            print(f"Traceback: {traceback.format_exc()}")
+            return [self._generate_placeholder_house(num_floors, color_scheme or "modern grey")]
+
+    def _generate_placeholder_house(self, num_floors, color_scheme):
+        size = (768, 768, 3)
+        color_schemes = {
+            "modern grey": [(200, 200, 200), (150, 150, 150)],
+            "brick red": [(180, 100, 80), (150, 80, 60)],
+            "navy blue": [(60, 80, 120), (40, 60, 100)],
+            "white": [(250, 250, 250), (240, 240, 240)]
+        }
+        base_color, accent_color = color_schemes.get(color_scheme, [(200, 200, 200), (150, 150, 150)])
+        placeholder = np.ones(size, dtype=np.uint8)
+        for i in range(size[0]):
+            blend = i / size[0]
+            color = [int(base_color[j] * (1-blend) + accent_color[j] * blend) for j in range(3)]
+            placeholder[i, :] = color
+        pil_image = Image.fromarray(placeholder)
+        draw = ImageDraw.Draw(pil_image)
+        house_width = 400
+        house_height = 300 if num_floors == 1 else 400
+        start_x = (size[1] - house_width) // 2
+        start_y = (size[0] - house_height) // 2
+        draw.rectangle([start_x, start_y, start_x + house_width, start_y + house_height], 
+                       outline=(100, 100, 100), width=3)
+        window_size = 60
+        if num_floors == 1:
+            for i in range(3):
+                x = start_x + 80 + i * 120
+                y = start_y + 120
+                draw.rectangle([x, y, x + window_size, y + window_size], 
+                               outline=(80, 80, 80), width=2)
+        else:
+            for floor in range(2):
+                for i in range(3):
+                    x = start_x + 80 + i * 120
+                    y = start_y + 80 + floor * 160
+                    draw.rectangle([x, y, x + window_size, y + window_size], 
+                                   outline=(80, 80, 80), width=2)
+        door_width = 80
+        door_height = 120
+        door_x = start_x + (house_width - door_width) // 2
+        door_y = start_y + house_height - door_height
+        draw.rectangle([door_x, door_y, door_x + door_width, door_y + door_height], 
+                       outline=(60, 60, 60), width=3)
+        try:
+            font = ImageFont.load_default()
+        except:
+            font = None
+        text = f"{num_floors}-FLOOR HOUSE\n{color_scheme.upper()}"
+        if font:
+            try:
+                bbox = draw.textbbox((0, 0), text, font=font)
+                text_width = bbox[2] - bbox[0]
+                text_height = bbox[3] - bbox[1]
+                x = (size[1] - text_width) // 2
+                y = 50
+                draw.text((x, y), text, fill=(80, 80, 80), font=font)
+            except:
+                draw.text((size[1]//2 - 100, 50), text, fill=(80, 80, 80))
+        return np.array(pil_image)
+
+def roboflow_generate_image(image_path, api_key, model_endpoint, max_size=1024, timeout=60):
+    try:
+        print(f"Processing image for room detection: {image_path}")
+        img = Image.open(image_path)
+        if img.size[0] > max_size or img.size[1] > max_size:
+            img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        img_bytes = io.BytesIO()
+        img.save(img_bytes, format="JPEG", quality=85, optimize=True)
+        img_bytes.seek(0)
+        print(f"Sending request to Roboflow API for image: {image_path}")
+        response = requests.post(
+            model_endpoint,
+            params={"api_key": api_key, "format": "json"},
+            files={"file": ("image.jpg", img_bytes, "image/jpeg")},
+            timeout=timeout
+        )
+        print(f"Roboflow response status: {response.status_code}")
+        if response.status_code != 200:
+            print(f"Roboflow error response: {response.text}")
+            raise HTTPException(status_code=500, detail=f"Roboflow detection failed: {response.text}")
+        predictions = response.json()
+        print(f"Roboflow predictions: {predictions}")
+        detected_labels = set()
+        rooms = []
+        for pred in predictions.get("predictions", []):
+            label = pred["class"].upper()
+            detected_labels.add(label)
+            rooms.append({
+                "label": label,
+                "bounds": (pred["x"], pred["y"], pred["width"], pred["height"]),
+                "confidence": pred["confidence"]
+            })
+        print(f"Detected labels: {detected_labels}")
+        return detected_labels, rooms
+    except Exception as e:
+        print(f"Roboflow detection error: {str(e)}")
+        print(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Roboflow detection failed: {str(e)}")
+
+def image_to_base64(image_array):
+    try:
+        if isinstance(image_array, np.ndarray):
+            pil_image = Image.fromarray(image_array.astype(np.uint8))
+        else:
+            pil_image = image_array
+        buffer = io.BytesIO()
+        pil_image.save(buffer, format="PNG", optimize=True)
+        buffer.seek(0)
+        return base64.b64encode(buffer.getvalue()).decode()
+    except Exception as e:
+        print(f"Failed to convert image to base64: {e}")
+        raise
+
+# Initialize designers
+print("Initializing AI Designers...")
+interior_designer = EnhancedAIInteriorDesigner()
+exterior_designer = EnhancedAIExteriorDesigner()
+
+# Load models on startup
+try:
+    interior_designer.load_model()
+    exterior_designer.load_models()
+    if not (interior_designer.model_loaded and exterior_designer.models_loaded):
+        print("Warning: One or more models failed to load. Using placeholders.")
+except Exception as e:
+    print(f"Error during model initialization: {e}")
+    raise
+
+@app.get("/")
+async def root():
+    return {
+        "success": "AI Interior and Exterior Designer API is running!",
+        "status": "success",
+        "message": True,
+        "interior_model_loaded": interior_designer.model_loaded,
+        "exterior_model_status": "RUNNING",
+        "exterior_models_loaded": exterior_designer.models_loaded,
+        "device": interior_designer.device,
+        "cuda_available": torch.cuda.is_available()
+    }
+
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "success": True,
+        "interior_model_loaded": interior_designer.model_loaded,
+        "exterior_models_loaded": exterior_designer.models_loaded,
+        "device": interior_designer.device,
+        "cuda_available": torch.cuda.is_available()
+    }
+
+@app.post("/api/process_floorplan")
+async def process_floorplan(
+    image_base64: str = Form(...),
+    style: str = Form(...),
+    custom_prompt: Optional[str] = Form(None)
+):
+    temp_file = None
+    try:
+        print(f"Processing interior design request with style: {style}")
+        if style not in ["modern", "minimalist", "luxury"]:
+            raise HTTPException(status_code=400, detail="Style must be one of: modern, minimalist, luxury")
+        if "," in image_base64:
+            image_base64 = image_base64.split(",")[1]
+        image_data = base64.b64decode(image_base64)
+        temp_file = os.path.join(UPLOAD_DIR, f"floorplan_{uuid.uuid4().hex}.jpg")
+        with open(temp_file, "wb") as f:
+            f.write(image_data)
+        print(f"Saved uploaded image to: {temp_file}")
+        API_KEY = "v83rqB0IeQLzsmgP2yiB"
+        MODEL_ENDPOINT = "https://detect.roboflow.com/floorplan-labelinggg/2"
+        detected_labels, detected_rooms = roboflow_generate_image(temp_file, API_KEY, MODEL_ENDPOINT)
+        if not detected_labels:
+            raise HTTPException(status_code=400, detail="No rooms detected in the floor plan")
+        normalized_labels = set(interior_designer._normalize_room_type(lbl) for lbl in detected_labels)
+        generated_designs = []
+        print(f"Detected rooms: {list(normalized_labels)}")
+        for room_type in normalized_labels:
+            try:
+                print(f"Generating interior design for {room_type}")
+                design_img = interior_designer.generate_room_design(
+                    room_type,
+                    style,
+                    custom_prompt.strip() if custom_prompt else None
+                )
+                base64_image = image_to_base64(design_img)
+                generated_designs.append({
+                    "room_type": room_type,
+                    "room_name": room_type.replace("_", " ").title(),
+                    "style": style,
+                    "image_base64": base64_image
+                })
+                print(f"Successfully generated interior design for {room_type}")
+            except Exception as e:
+                print(f"Error generating interior design for {room_type}: {e}")
+                print(f"Traceback: {traceback.format_exc()}")
+                continue
+        if not generated_designs:
+            raise HTTPException(status_code=500, detail="Failed to generate any interior designs.")
+        return {
+            "success": True,
+            "message": f"Successfully generated {len(generated_designs)} interior designs!",
+            "detected_rooms": list(normalized_labels),
+            "rooms": generated_designs,
+            "generated_designs": generated_designs,
+            "model_used": "AI Generated Successfully" if interior_designer.model_loaded else "Placeholder"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = f"Error processing interior design: {str(e)}"
+        print(f"Error: {e}")
+        print(f"Full traceback: {traceback.format_exc()}")
+        if "CUDA out of memory" in str(e):
+            error_msg = "GPU memory limit exceeded. Please try again or use a smaller image."
+        elif "timeout" in str(e).lower():
+            error_msg = "Request timeout. Please try again with a smaller image."
+        raise HTTPException(status_code=500, detail=f"Internal error: {error_msg}")
+    finally:
+        if temp_file and os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+                print(f"Cleaned up temp file: {temp_file}")
+            except Exception as e:
+                print(f"Failed to clean up temp file {temp_file}: {e}")
+
+@app.post("/api/process_exterior")
+async def apply_exterior_design(
+    image_base64: str = Form(...),
+    color_scheme: Optional[str] = Form(None),
+    num_variations: int = Form(3)
+):
+    temp_file = None
+    try:
+        print(f"Processing exterior design request...")
+        if num_variations < 1 or num_variations > 5:
+            num_variations = 3
+        if "," in image_base64:
+            image_base64 = image_base64.split(",")[1]
+        image_data = base64.b64decode(image_base64)
+        temp_file = os.path.join(UPLOAD_DIR, f"floorplan_exterior_{uuid.uuid4().hex}.jpg")
+        with open(temp_file, "wb") as f:
+            f.write(image_data)
+        print(f"Saved uploaded floor plan to: {temp_file}")
+        num_floors = exterior_designer.opencv_floor_detection(temp_file)
+        print(f"Number of detected floors: {num_floors}")
+        generated_images = exterior_designer.generate_house_design(
+            num_floors=num_floors,
+            color_scheme=color_scheme,
+            num_variations=num_variations
+        )
+        if not generated_images:
+            raise HTTPException(status_code=500, detail="No exterior images were generated")
+        session_id = str(uuid.uuid4())
+        generated_exterior_designs = []
+        for i, design_img in enumerate(generated_images):
+            variation_id = f"var_{i+1}_{uuid.uuid4().hex[:8]}"
+            image_path = os.path.join(OUTPUT_DIR, f"exterior_{session_id}_{i}.png")
+            pil_img = Image.fromarray(design_img.astype(np.uint8))
+            pil_img.save(image_path)
+            EXTERIOR_DESIGN_STORAGE.setdefault(session_id, {"variations": {}})["variations"][variation_id] = image_path
+            base64_image = image_to_base64(design_img)
+            generated_exterior_designs.append({
+                "variation": i + 1,
+                "variation_id": variation_id,
+                "num_floors": num_floors,
+                "color_scheme": color_scheme or "auto-selected",
+                "image_base64": base64_image
+            })
+            print(f"Successfully processed exterior variation {i + 1}")
+        with open("exterior_designs.json", "w") as f:
+            json.dump(EXTERIOR_DESIGN_STORAGE, f)
+        if not generated_exterior_designs:
+            raise HTTPException(status_code=500, detail="Failed to generate any exterior designs.")
+        return {
+            "success": True,
+            "message": f"Successfully generated {len(generated_exterior_designs)} exterior house designs!",
+            "num_floors": num_floors,
+            "generated_designs": generated_exterior_designs,
+            "session_id": session_id,
+            "model_used": "AI Generated" if exterior_designer.models_loaded else "Placeholder"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = f"Error processing exterior design: {str(e)}"
+        print(f"Error: {error_msg}")
+        print(f"Full traceback: {traceback.format_exc()}")
+        if "CUDA out of memory" in str(e):
+            error_msg = "GPU memory limit exceeded. Please try again or reduce number of variations."
+        elif "timeout" in str(e).lower():
+            error_msg = "Request timeout. Please try again."
+        raise HTTPException(status_code=500, detail=f"Internal error: {error_msg}")
+    finally:
+        if temp_file and os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+                print(f"Cleaned up temp file: {temp_file}")
+            except Exception as e:
+                print(f"Failed to clean up temp file {temp_file}: {e}")
+
+@app.get("/images/{filename}")
+async def serve_image(filename: str):
+    image_path = os.path.join(PUBLIC_IMAGES_DIR, filename)
+    if not os.path.exists(image_path):
+        raise HTTPException(status_code=404, detail="Image not found")
+    return FileResponse(image_path)
+
+def download_file(url, filename):
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        with open(filename, 'wb') as f:
+            f.write(response.content)
+        print(f"Saved {filename}")
+        return filename
+    except Exception as e:
+        print(f"Failed to download {url}: {str(e)}")
+        raise
+
+def check_task_status(task_id, headers):
+    max_attempts = 60
+    for attempt in range(max_attempts):
+        try:
+            response = requests.get(
+                f"https://api.meshy.ai/openapi/v1/image-to-3d/{task_id}",
+                headers=headers,
+                timeout=10
+            )
+            response.raise_for_status()
+            data = response.json()
+            status = data["status"]
+            print(f"Task {task_id} Status: {status}")
+            if status == "SUCCEEDED":
+                return data
+            elif status in ["FAILED", "CANCELED"]:
+                raise Exception(f"Task {task_id} failed or was canceled: {data.get('error_message', 'No details')}")
+            time.sleep(5)
+        except Exception as e:
+            print(f"Status check failed for task {task_id}: {str(e)}")
+            if attempt == max_attempts - 1:
+                raise Exception(f"Failed to get task status after {max_attempts} attempts: {str(e)}")
+    raise Exception("Task status check timed out")
+
+def generate_3d_drafts(image_base64, num_drafts=1):
+    try:
+        if not MESHY_API_KEY:
+            raise ValueError("MESHY_API_KEY is not set")
+
+        # Decode base64 image
+        if "," in image_base64:
+            image_base64 = image_base64.split(",")[1]
+        image_data = base64.b64decode(image_base64)
+        img = Image.open(io.BytesIO(image_data))
+        img = img.convert("RGB")
+        max_size = 640
+        img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+        if img.size[0] < 100 or img.size[1] < 100:
+            raise ValueError(f"Optimized image is too small: {img.size}")
+        print(f"Optimized image size: {img.size}, mode: {img.mode}")
+
+        # Save optimized image temporarily
+        temp_image_path = os.path.join(THREED_OUTPUT_DIR, f"optimized_{uuid.uuid4().hex}.jpg")
+        img.save(temp_image_path, format="JPEG", quality=85, optimize=True)
+
+        # Convert to base64 URI
+        with open(temp_image_path, "rb") as image_file:
+            image_data = image_file.read()
+            image_base64 = base64.b64encode(image_data).decode('utf-8')
+            image_uri = f"data:image/jpeg;base64,{image_base64}"
+
+        headers = {"Authorization": f"Bearer {MESHY_API_KEY}"}
+        payload = {
+            "image_url": image_uri,
+            "ai_model": "meshy-5",
+            "should_texture": True,
+            "should_remesh": True,
+            "variations": num_drafts
+        }
+
+        max_retries = 3
+        task_id = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = requests.post(
+                    MESHY_API_URL,
+                    headers=headers,
+                    json=payload,
+                    timeout=30
+                )
+                print(f"Meshy.ai response status: {response.status_code}, attempt {attempt}")
+                print(f"Meshy.ai response text: {response.text}")
+                if response.status_code in [200, 202]:
+                    response_data = response.json()
+                    task_id = response_data.get("result")
+                    if task_id:
+                        print(f"Task ID: {task_id}")
+                        break
+                    else:
+                        raise ValueError(f"No task ID returned: {response_data}")
+                else:
+                    print(f"Meshy.ai error response: {response.text}")
+                    if attempt == max_retries:
+                        raise Exception(f"Meshy.ai task creation failed after {max_retries} attempts: {response.text}")
+                    time.sleep(2 ** attempt)
+            except requests.exceptions.RequestException as e:
+                print(f"Meshy.ai request failed: {str(e)}, attempt {attempt}")
+                if attempt == max_retries:
+                    raise Exception(f"Meshy.ai request failed after {max_retries} attempts: {str(e)}")
+                time.sleep(2 ** attempt)
+
+        if not task_id:
+            raise Exception("No task ID obtained after retries")
+
+        # Poll for task completion
+        task_data = check_task_status(task_id, headers)
+        model_urls = task_data.get("model_urls", {})
+        texture_urls = task_data.get("texture_urls", [])
+
+        drafts = {}
+        draft_id = str(uuid.uuid4())
+        draft_output_dir = os.path.join(THREED_OUTPUT_DIR, draft_id)
+        os.makedirs(draft_output_dir, exist_ok=True)
+
+        # Download GLB model
+        model_url = model_urls.get("glb")
+        model_path = None
+        if model_url:
+            model_path = download_file(model_url, os.path.join(draft_output_dir, "model.glb"))
+            model_path = os.path.join(draft_id, "model.glb")  # Relative path for response
+
+        # Download textures
+        texture_paths = {}
+        for texture in texture_urls:
+            for key, url in texture.items():
+                texture_path = download_file(url, os.path.join(draft_output_dir, f"{key}.png"))
+                texture_paths[key] = os.path.join(draft_id, f"{key}.png")
+
+        drafts[draft_id] = {
+            "model_url": f"{SERVER_PUBLIC_URL}/3d_files/{model_path}" if model_path else None,
+            "texture_urls": {key: f"{SERVER_PUBLIC_URL}/3d_files/{path}" for key, path in texture_paths.items()},
+            "task_id": task_id
+        }
+
+        print(f"Generated {len(drafts)} 3D drafts")
+        return drafts
+
+    except Exception as e:
+        print(f"3D draft generation error: {str(e)}")
+        print(f"Full traceback: {traceback.format_exc()}")
+        draft_id = str(uuid.uuid4())
+        return {draft_id: {"model_url": None, "texture_urls": {}, "error": str(e)}}
+
+    finally:
+        if 'temp_image_path' in locals() and os.path.exists(temp_image_path):
+            try:
+                os.remove(temp_image_path)
+                print(f"Cleaned up temp image: {temp_image_path}")
+            except Exception as e:
+                print(f"Failed to clean up temp image {temp_image_path}: {e}")
+
+@app.post("/api/process_3d")
+async def process_3d_design(
+    session_id: str = Form(...),
+    variation_id: str = Form(...),
+    image_base64: str = Form(...)
+):
+    try:
+        print(f"Processing 3D design request for session {session_id}, variation {variation_id}")
+        if session_id not in EXTERIOR_DESIGN_STORAGE:
+            raise HTTPException(status_code=404, detail="Session not found")
+        if variation_id not in EXTERIOR_DESIGN_STORAGE[session_id]["variations"]:
+            raise HTTPException(status_code=404, detail="Variation not found")
+
+        # Generate 3D drafts using the provided base64 image
+        drafts = generate_3d_drafts(image_base64, num_drafts=1)
+        THREED_DRAFT_STORAGE[session_id] = drafts
+
+        if not drafts:
+            raise Exception("No 3D drafts were generated")
+
+        selected_draft_id = list(drafts.keys())[0]
+        draft = drafts[selected_draft_id]
+
+        if draft.get("error"):
+            raise Exception(f"3D draft generation failed: {draft['error']}")
+
+        with open("threed_drafts.json", "w") as f:
+            json.dump(THREED_DRAFT_STORAGE, f)
+
+        return {
+            "success": True,
+            "message": "Successfully generated and textured 3D model!",
+            "model_url": draft["model_url"],
+            "texture_urls": draft["texture_urls"],
+            "selected_draft_id": selected_draft_id
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = f"Error processing 3D design: {str(e)}"
+        print(error_msg)
+        print(f"Full traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=error_msg)
+
+@app.get("/3d_files/{path:path}")
+async def serve_3d_file(path: str):
+    file_path = os.path.join(THREED_OUTPUT_DIR, path)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(file_path)
+
+@app.post("/api/cleanup_image/{filename}")
+async def cleanup_image(filename: str):
+    image_path = os.path.join(PUBLIC_IMAGES_DIR, filename)
+    if os.path.exists(image_path):
+        try:
+            os.remove(image_path)
+            return {"success": True, "message": f"Cleaned up {filename}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    return {"success": False, "error": "File not found"}
+
+@app.on_event("startup")
+async def startup_cleanup():
+    import glob
+    import time
+    
+    def cleanup_old_images():
+        while True:
+            try:
+                current_time = time.time()
+                pattern = os.path.join(PUBLIC_IMAGES_DIR, "extracted_*.jpg")
+                for image_path in glob.glob(pattern):
+                    if os.path.getmtime(image_path) < current_time - 3600:
+                        os.remove(image_path)
+                        print(f"Cleaned up old image: {image_path}")
+            except Exception as e:
+                print(f"Cleanup error: {e}")
+            time.sleep(1800)
+    
+    import threading
+    cleanup_thread = threading.Thread(target=cleanup_old_images)
+    cleanup_thread.daemon = True
+    cleanup_thread.start()
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", "7860"))
+    uvicorn.run(app, host="0.0.0.0", port=port)      
+
+
+
+
+
+fastapi
+uvicorn
+accelerate
+torch
+torchvision
+diffusers
+transformers
+accelerate
+pillow
+numpy
+requests
+python-multipart
+glob2
+opencv-python
+pyyaml
