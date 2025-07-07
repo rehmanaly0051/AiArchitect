@@ -13,7 +13,7 @@ Explore AiArchitect step by step:
 | Dashboard                 | ![Dashboard](demo/entering.jpg)                        | 
 | Signup                    | ![Signup](demo/signup.jpg)                             |
 | Login                     | ![Login](demo/login.jpg)                               |
-| AboutUs                   | ![Homepage](demo/floorplan.jpg)                        |
+| AboutUs                   | ![Homepage](demo/about.jpg)                            |
 | FAQs                      | ![Homepage](demo/faqs.jpg)                             |
 | About                     | ![Homepage](demo/about.jpg)                            |
 | Contact                   | ![Homepage](demo/faqs.jpg)                             |
